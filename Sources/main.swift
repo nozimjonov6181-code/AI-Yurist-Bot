@@ -1,8 +1,48 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
+// Linux serverlar uchun maxsus internetga ulanish yordamchisi
+extension URLSession {
+    func fetchData(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            let task = self.dataTask(with: request) { data, response, error in
+                if let error = error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                if let data = data, let response = response {
+                    continuation.resume(returning: (data, response))
+                    return
+                }
+                continuation.resume(throwing: URLError(.badServerResponse))
+            }
+            task.resume()
+        }
+    }
+    
+    func fetchData(from url: URL) async throws -> (Data, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            let task = self.dataTask(with: url) { data, response, error in
+                if let error = error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                if let data = data, let response = response {
+                    continuation.resume(returning: (data, response))
+                    return
+                }
+                continuation.resume(throwing: URLError(.badServerResponse))
+            }
+            task.resume()
+        }
+    }
+}
 
 let telegramToken = "8619856731:AAFfs0IZhdC0N5vA03uxNY4yicEw3ehxkS8"
-// DIQQAT: Shu yerga YANgi (4-chi) API kalitni qo'y. U faqat botning ishlashi uchun xizmat qiladi!
-let geminiApiKey = "AIzaSyAHpmRUe5zGdOAIA7NyzNNJp_I_KX6Z0Lk"
+// DIQQAT: Shu yerga 4-chi yangi API kalitni qo'ying!
+let geminiApiKey = "AIzaSyAHpmRUe5zGdOAIA7NyzNNJp_I_KX6Z0Lk" 
 let pineconeApiKey = "pcsk_2oUVQd_6G3fz1moamV6mqbGRdUU2B5Tqk4XTeqdSs8JgGTGGkECPkt6y8a5tP3xx2DKh57"
 let pineconeHost = "https://yurist-pro-cwgplja.svc.aped-4627-b74a.pinecone.io"
 
@@ -10,7 +50,7 @@ var offset = 0
 
 print("🚀 AI-Yurist Bot ishga tushmoqda...")
 
-// 1. Mijoz savolini vektorga aylantirish (Ayg'oqchi bilan)
+// 1. Mijoz savolini vektorga aylantirish
 func embedQuestion(_ text: String) async throws -> [Double] {
     let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=\(geminiApiKey)")!
     var req = URLRequest(url: url)
@@ -19,24 +59,22 @@ func embedQuestion(_ text: String) async throws -> [Double] {
     let body: [String: Any] = ["model": "models/gemini-embedding-001", "content": ["parts": [["text": text]]]]
     req.httpBody = try JSONSerialization.data(withJSONObject: body)
     
-    let (data, _) = try await URLSession.shared.data(for: req)
+    let (data, _) = try await URLSession.shared.fetchData(for: req)
     let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     
-    // AYG'OQCHI: Agar Gemini xato bersa, uni konsolga chiqaramiz
     if let errorObj = json?["error"] as? [String: Any] {
         let errorMsg = errorObj["message"] as? String ?? "Noma'lum xato"
-        print("\n🚨 GEMINI SAVOLNI VEKTORGA AYLANTIRIShDA XATO QILDI: \n\(errorMsg)\n")
-        throw NSError(domain: "Gemini", code: 2, userInfo: [NSLocalizedDescriptionKey: "Gemini limiti yoki kalit xatosi"])
+        print("\n🚨 GEMINI XATOSI: \n\(errorMsg)\n")
+        throw NSError(domain: "Gemini", code: 2, userInfo: [NSLocalizedDescriptionKey: "Gemini limiti yoki xatosi"])
     }
     
     guard let embedding = json?["embedding"] as? [String: Any], let values = embedding["values"] as? [Double] else {
-        print("\n🚨 NOMA'LUM JAVOB: \(String(data: data, encoding: .utf8) ?? "")\n")
         throw NSError(domain: "Gemini", code: 1, userInfo: [NSLocalizedDescriptionKey: "Vektor formati xato"])
     }
     return values
 }
 
-// 2. Pinecone bazasidan savolga eng mos keluvchi Top-3 ta qonunni izlash
+// 2. Pinecone qidiruv
 func searchPinecone(vector: [Double]) async throws -> String {
     let url = URL(string: "\(pineconeHost)/query")!
     var req = URLRequest(url: url)
@@ -46,12 +84,12 @@ func searchPinecone(vector: [Double]) async throws -> String {
     
     let body: [String: Any] = [
         "vector": vector,
-        "topK": 3,
+        "topK": 3, 
         "includeMetadata": true
     ]
     req.httpBody = try JSONSerialization.data(withJSONObject: body)
     
-    let (data, _) = try await URLSession.shared.data(for: req)
+    let (data, _) = try await URLSession.shared.fetchData(for: req)
     let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     guard let matches = json?["matches"] as? [[String: Any]] else { return "" }
     
@@ -64,7 +102,7 @@ func searchPinecone(vector: [Double]) async throws -> String {
     return foundContext
 }
 
-// 3. Topilgan qonunlarga asoslanib Gemini orqali aqlli va xalqchil javob yasash
+// 3. AI Javobi
 func generateAnswer(question: String, context: String, chatId: Int) async {
     let urlString = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=\(geminiApiKey)"
     guard let url = URL(string: urlString) else { return }
@@ -89,7 +127,7 @@ func generateAnswer(question: String, context: String, chatId: Int) async {
     request.httpBody = try? JSONSerialization.data(withJSONObject: body)
     
     do {
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, _) = try await URLSession.shared.fetchData(for: request)
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let candidates = json["candidates"] as? [[String: Any]],
            let firstPart = (candidates.first?["content"] as? [String: Any])?["parts"] as? [[String: Any]],
@@ -103,15 +141,15 @@ func generateAnswer(question: String, context: String, chatId: Int) async {
     }
 }
 
-// 4. Telegramga xabar yuborish
+// 4. Telegram yuborish
 func sendMessage(chatId: Int, text: String) async {
     let encodedText = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
     let urlStr = "https://api.telegram.org/bot\(telegramToken)/sendMessage?chat_id=\(chatId)&text=\(encodedText)"
     guard let url = URL(string: urlStr) else { return }
-    let _ = try? await URLSession.shared.data(from: url)
+    let _ = try? await URLSession.shared.fetchData(from: url)
 }
 
-// 5. Telegramdan kelayotgan xabarlarni eshitish
+// 5. Asosiy Sikl
 func startBot() async {
     print("✅ Bot ishlashga tayyor! Telegramdan yuridik savol yozishingiz mumkin.")
     while true {
@@ -119,7 +157,7 @@ func startBot() async {
         guard let url = URL(string: urlStr) else { continue }
         
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.fetchData(from: url)
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let result = json["result"] as? [[String: Any]] {
                 for update in result {
@@ -132,7 +170,6 @@ func startBot() async {
                         print("📩 Yangi savol: \(text)")
                         await sendMessage(chatId: chatId, text: "⏳ Baza qidirilmoqda. Iltimos kuting...")
                         
-                        // RAG jarayoni: Savol -> Vektor -> Qidiruv -> AI Javobi
                         do {
                             let questionVector = try await embedQuestion(text)
                             let context = try await searchPinecone(vector: questionVector)
@@ -143,7 +180,7 @@ func startBot() async {
                                 await generateAnswer(question: text, context: context, chatId: chatId)
                             }
                         } catch {
-                            await sendMessage(chatId: chatId, text: "Qidiruv tizimida xatolik yuz berdi: \(error.localizedDescription)")
+                            await sendMessage(chatId: chatId, text: "Qidiruv tizimida xatolik yuz berdi.")
                         }
                     }
                 }
